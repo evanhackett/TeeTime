@@ -1,0 +1,5 @@
+{
+  "name": "TeeTime",
+  "description": "A simple 360 thinking clock style visual timer with color-block segments and fading progress tracking.",
+  "requestFramePermissions": []
+}

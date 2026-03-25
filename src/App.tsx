@@ -411,6 +411,9 @@ const SortableTaskItem: React.FC<SortableTaskItemProps> = ({
   );
 };
 
+// Capture share param at module load time, before any React effect can modify the URL
+const initialShareParam = new URLSearchParams(window.location.search).get('share');
+
 export default function App() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>('');
@@ -459,6 +462,7 @@ export default function App() {
   
   const audioContextRef = useRef<AudioContext | null>(null);
   const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+  const shareImportedRef = useRef(false);
 
   const activeWorkspace = workspaces.find(w => w.id === activeWorkspaceId) || workspaces[0];
   const timers = activeWorkspace?.timers || [];
@@ -490,13 +494,15 @@ export default function App() {
             ...w,
             timers: w.timers.map(t => ({ ...t, isRunning: false, isPaused: false }))
           })));
-          setActiveWorkspaceId(parsed[0].id);
-        } else {
+          const savedActiveId = localStorage.getItem('visual-timer-active-workspace');
+          const validId = parsed.find((w: Workspace) => w.id === savedActiveId) ? savedActiveId! : parsed[0].id;
+          setActiveWorkspaceId(validId);
+        } else if (!initialShareParam) {
           createInitialWorkspace();
         }
       } catch (e) {
         console.error("Failed to parse saved workspaces", e);
-        createInitialWorkspace();
+        if (!initialShareParam) createInitialWorkspace();
       }
     } else {
       // Migrate old timers if they exist
@@ -513,9 +519,9 @@ export default function App() {
           setWorkspaces([initialWorkspace]);
           setActiveWorkspaceId(initialWorkspace.id);
         } catch (e) {
-          createInitialWorkspace();
+          if (!initialShareParam) createInitialWorkspace();
         }
-      } else {
+      } else if (!initialShareParam) {
         createInitialWorkspace();
       }
     }
@@ -564,6 +570,12 @@ export default function App() {
     localStorage.setItem('visual-timer-task-presets', JSON.stringify(taskPresets));
     localStorage.setItem('visual-timer-name-presets', JSON.stringify(timerNamePresets));
   }, [workspaces, taskPresets, timerNamePresets]);
+
+  useEffect(() => {
+    if (activeWorkspaceId) {
+      localStorage.setItem('visual-timer-active-workspace', activeWorkspaceId);
+    }
+  }, [activeWorkspaceId]);
 
   useEffect(() => {
     localStorage.setItem('visual-timer-presets', JSON.stringify(taskPresets));
@@ -633,49 +645,60 @@ export default function App() {
   }, [setTimers]);
 
   const shareWorkspace = () => {
-    if (!activeWorkspace) return;
-    const shareData = {
-      name: activeWorkspace.name,
-      description: activeWorkspace.description,
-      timers: activeWorkspace.timers.map(t => ({
-        ...t,
-        isRunning: false,
-        isPaused: false,
-        isCompleted: false,
-        currentTaskIndex: 0,
-        remainingTime: t.tasks[0]?.duration || 0
-      }))
-    };
-    const encoded = btoa(JSON.stringify(shareData));
-    const url = `${window.location.origin}${window.location.pathname}?share=${encoded}`;
-    navigator.clipboard.writeText(url);
+    navigator.clipboard.writeText(window.location.href);
     toast.success('Share link copied to clipboard!', {
       description: 'You can now share this set of timers with others.'
     });
   };
 
+  // Keep URL in sync with all workspaces' setup (not running state)
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const shareData = params.get('share');
-    if (shareData) {
-      try {
-        const decoded = JSON.parse(atob(shareData));
-        const newWorkspace: Workspace = {
+    if (workspaces.length === 0 || workspaces.every(w => w.timers.length === 0)) return;
+    const setupData = workspaces.map(w => ({
+      id: w.id,
+      name: w.name,
+      description: w.description,
+      timers: w.timers.map(t => ({
+        id: t.id,
+        name: t.name,
+        tasks: t.tasks,
+        startAnnouncementType: t.startAnnouncementType,
+        speechRate: t.speechRate,
+        pronunciation: t.pronunciation,
+      }))
+    }));
+    const encoded = btoa(JSON.stringify(setupData));
+    const newParam = `?share=${encodeURIComponent(encoded)}`;
+    if (window.location.search !== newParam) {
+      window.history.replaceState({}, document.title, window.location.pathname + newParam);
+    }
+  }, [workspaces]);
+
+  // Import workspace from share URL on first load
+  useEffect(() => {
+    if (shareImportedRef.current || !initialShareParam) return;
+    shareImportedRef.current = true;
+    try {
+        const decoded = JSON.parse(atob(initialShareParam));
+        const sharedWorkspaces: Workspace[] = (Array.isArray(decoded) ? decoded : [decoded]).map((w: Workspace) => ({
+          ...w,
           id: Math.random().toString(36).substr(2, 9),
-          name: decoded.name + ' (Shared)',
-          description: decoded.description,
-          timers: decoded.timers
-        };
-        setWorkspaces(prev => [...prev, newWorkspace]);
-        setActiveWorkspaceId(newWorkspace.id);
-        // Clear the URL parameter
-        window.history.replaceState({}, document.title, window.location.pathname);
-        toast.success(`Imported shared workspace: ${decoded.name}`, {
-          description: 'This set of timers has been saved to your list.'
+          timers: (w.timers || []).map((t: Timer) => ({
+            ...t,
+            isRunning: false,
+            isPaused: false,
+            isCompleted: false,
+            currentTaskIndex: 0,
+            remainingTime: t.tasks[0]?.duration || 0,
+          }))
+        }));
+        setWorkspaces(prev => [...prev, ...sharedWorkspaces]);
+        setActiveWorkspaceId(sharedWorkspaces[0].id);
+        toast.success(`Loaded ${sharedWorkspaces.length} shared workspace${sharedWorkspaces.length > 1 ? 's' : ''}`, {
+          description: 'These workspaces have been added to your list.'
         });
-      } catch (e) {
-        console.error("Failed to import shared workspace", e);
-      }
+    } catch (e) {
+      console.error("Failed to import shared workspace", e);
     }
   }, []);
 
